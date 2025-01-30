@@ -15,6 +15,7 @@ public class Program
             {
                 Query = [new Sensor() { Search = ["language_tag"] }],
                 Value = "$remove",
+                ValueType = RuleValueType.Command,
                 Type = RuleType.Recursive
             }
         );
@@ -23,6 +24,7 @@ public class Program
             {
                 Query = [new Sensor() { Search = ["marketplace_id"] }],
                 Value = "$remove",
+                ValueType = RuleValueType.Command,
                 Type = RuleType.Recursive
             }
         );
@@ -31,6 +33,7 @@ public class Program
             {
                 Query = [new Sensor() { Search = ["$length"], Value = "1" }],
                 Value = "$removeStep",
+                ValueType = RuleValueType.Command,
                 Type = RuleType.Recursive
             }
         );
@@ -43,7 +46,19 @@ public class Program
                     new Sensor() { Search = ["$root"], IsNegative = true }
                 ],
                 Value = "$removeStep",
+                ValueType = RuleValueType.Command,
                 Type = RuleType.Recursive
+            }
+        );
+        engine.AddRule(
+            new Rule()
+            {
+                Query =
+                [
+                    new Sensor() { Search = ["$root", "bullet_point"] }
+                ],
+                Value = "Bullet points",
+                ValueType = RuleValueType.Key
             }
         );
 
@@ -262,12 +277,12 @@ public class Program
         ".Replace("'", "\"")
         );
 
-        foreach (JProperty property in json.Properties())
+        foreach (JProperty property in json.Properties().Skip(6).Take(1))
         {
             JObject attribute = new JObject(property.DeepClone());
             ProcessResponse response = engine.Process(attribute);
-            // Console.WriteLine(response.Result.ToString());
-            // Console.WriteLine("______");
+            Console.WriteLine(response.Result.ToString());
+            Console.WriteLine("______");
 
             JsonRuleEngine negativeEngine = new JsonRuleEngine();
 

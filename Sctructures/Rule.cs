@@ -9,6 +9,7 @@ public class Rule
     public required List<Sensor> Query { get; set; }
     public List<List<Sensor>> ValueQueries { get; set; } = [];
     public required string Value { get; set; }
+    public RuleValueType ValueType { get; set; } = RuleValueType.Value;
     public string? AddKey { get; set; } = null;
     
     public override bool Equals(object? obj)

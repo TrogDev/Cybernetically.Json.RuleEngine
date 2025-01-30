@@ -1,8 +1,6 @@
 using System.Text.Json;
 using Cybernetically.Json.RuleEngine.Enums;
-using Cybernetically.Json.RuleEngine.Interfaces;
 using Cybernetically.Json.RuleEngine.Sctructures;
-using Cybernetically.Json.RuleEngine.Services;
 using Newtonsoft.Json.Linq;
 
 namespace Cybernetically.Json.RuleEngine;
@@ -12,7 +10,6 @@ public class JsonRuleEngine
     private const string enginePrefix = "$";
     private readonly List<Rule> rules = [];
     private readonly List<JToken> locks = [];
-    public ITypeProvider TypeProvider { get; set; } = new DefaultTypeProvider();
 
     public void AddRule(Rule rule)
     {
@@ -30,7 +27,7 @@ public class JsonRuleEngine
 
         List<Rule> negative = [];
 
-        for (int i = 0; i < rules.Count; )
+        for (int i = 0; i < rules.Count;)
         {
             int changes = 0;
             Rule rule = rules[i];
@@ -226,21 +223,17 @@ public class JsonRuleEngine
 
     private void HandleRule(JToken token, Rule rule, List<Rule> negative)
     {
-        if (rule.Value == $"{enginePrefix}remove")
+        if (rule.ValueType == RuleValueType.Command)
         {
-            HandleRemove(token, negative);
-        }
-        else if (rule.Value == $"{enginePrefix}removeStep")
-        {
-            HandleRemoveStep(token, negative);
-        }
-        else if (rule.Value == $"{enginePrefix}toArray")
-        {
-            HandleToArray(token, negative);
-        }
-        else if (rule.Value == $"{enginePrefix}flatArray")
-        {
-            HandleFlatArray(token, negative);
+            switch (rule.Value)
+            {
+                case $"{enginePrefix}remove":
+                    HandleRemove(token, negative);
+                    break;
+                case $"{enginePrefix}removeStep":
+                    HandleRemoveStep(token, negative);
+                    break;
+            }
         }
         else
         {
@@ -380,51 +373,6 @@ public class JsonRuleEngine
             }
         }
     }
-
-    private void HandleToArray(JToken token, List<Rule> negative)
-    {
-        if (token is not JObject obj)
-        {
-            return;
-        }
-
-        JArray array = new JArray();
-
-        foreach (JProperty property in obj.Properties())
-        {
-            array.Add(property.Value);
-        }
-
-        if (token.Parent is JProperty parentProperty)
-        {
-            parentProperty.Value = array;
-        }
-        else if (token.Parent is JArray parentArray)
-        {
-            parentArray[parentArray.IndexOf(token)] = array;
-        }
-    }
-
-    private void HandleFlatArray(JToken token, List<Rule> negative)
-    {
-        if (token is not JArray array)
-        {
-            return;
-        }
-        if (token.Parent is not JArray parentArray)
-        {
-            return;
-        }
-
-        int i = parentArray.IndexOf(token);
-        token.Remove();
-
-        foreach (JToken item in array.Children().Reverse())
-        {
-            parentArray.Insert(i, item);
-        }
-    }
-
     private void HandleRewrite(JToken token, Rule rule, List<Rule> negative)
     {
         string value = rule.Value;
@@ -444,30 +392,42 @@ public class JsonRuleEngine
             }
         }
 
-        value = value.Replace($"{enginePrefix}key", GetCurrentKey(token));
-        value = value.Replace($"{enginePrefix}uuid", Guid.NewGuid().ToString());
-        value = value.Replace($"{enginePrefix}type", TypeProvider.GetTypeName(token.Type));
-        string path = string.Join("/", GetCurrentSearch(token).Skip(1).SkipLast(1));
-        if (path.Length > 0)
-        {
-            path += "/";
-        }
-        value = value.Replace($"{enginePrefix}path", path);
-
         List<string> negativeSearch = GetCurrentSearch(token);
 
         if (rule.AddKey == null)
         {
             if (token.Parent is JProperty property)
             {
-                negative.Add(
-                    new Rule()
+                if (rule.ValueType == RuleValueType.Key)
+                {
+                    negativeSearch[negativeSearch.Count - 1] = value;
+                    negative.Add(
+                        new Rule()
+                        {
+                            Query = [new Sensor() { Search = negativeSearch }],
+                            Value = property.Name,
+                            ValueType = rule.ValueType
+                        }
+                    );
+
+                    if (property.Parent is JObject objParent)
                     {
-                        Query = [new Sensor() { Search = negativeSearch }],
-                        Value = GetRawValue(property.Value)
+                        objParent.Remove(property.Name);
+                        objParent[value] = property.Value;
                     }
-                );
-                property.Value = JToken.Parse(value);
+                }
+                else
+                {
+                    negative.Add(
+                        new Rule()
+                        {
+                            Query = [new Sensor() { Search = negativeSearch }],
+                            Value = GetRawValue(property.Value),
+                            ValueType = rule.ValueType
+                        }
+                    );
+                    property.Value = JToken.Parse(value);
+                }
             }
             else if (token.Parent is JArray array)
             {
