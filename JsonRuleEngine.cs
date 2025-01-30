@@ -11,6 +11,7 @@ public class JsonRuleEngine
 {
     private const string enginePrefix = "$";
     private readonly List<Rule> rules = [];
+    private readonly List<JToken> locks = [];
     public ITypeProvider TypeProvider { get; set; } = new DefaultTypeProvider();
 
     public void AddRule(Rule rule)
@@ -61,6 +62,7 @@ public class JsonRuleEngine
 
             if (rule.Type != RuleType.Recursive || changes == 0)
             {
+                locks.Clear();
                 i++;
             }
         }
@@ -228,6 +230,10 @@ public class JsonRuleEngine
         {
             HandleRemove(token, negative);
         }
+        else if (rule.Value == $"{enginePrefix}removeStep")
+        {
+            HandleRemoveStep(token, negative);
+        }
         else if (rule.Value == $"{enginePrefix}toArray")
         {
             HandleToArray(token, negative);
@@ -282,6 +288,96 @@ public class JsonRuleEngine
                 }
             );
             array.Remove(token);
+        }
+    }
+
+    private void HandleRemoveStep(JToken token, List<Rule> negative)
+    {
+        List<string> negativeSearch = GetCurrentSearch(token);
+
+        if (token.Parent is JProperty parentProperty)
+        {
+            if (token is JArray array)
+            {
+                negative.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Search = negativeSearch }],
+                        Value = "[$0]",
+                        ValueQueries =
+                        [
+                            [new Sensor() { Search = ["$root"] }]
+                        ]
+                    }
+                );
+                parentProperty.Value = array.First();
+            }
+            else if (token is JObject obj)
+            {
+                JProperty firstProp = obj.Properties().First();
+                negative.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Search = negativeSearch }],
+                        Value = $"{{\"{firstProp.Name}\": $0}}",
+                        ValueQueries =
+                        [
+                            [new Sensor() { Search = ["$root"] }]
+                        ]
+                    }
+                );
+                parentProperty.Value = firstProp.Value;
+            }
+        }
+        else if (token.Parent is JArray parentArray)
+        {
+            int i = parentArray.IndexOf(token);
+
+            negativeSearch = negativeSearch.GetRange(0, negativeSearch.Count - 1);
+            negativeSearch.Add($"{enginePrefix}*");
+
+            if (token is JArray array)
+            {
+                if (!locks.Any(e => e == parentArray))
+                {
+                    locks.Add(parentArray);
+                    negative.Add(
+                        new Rule()
+                        {
+                            Query = [new Sensor() { Search = negativeSearch }],
+                            ValueQueries =
+                            [
+                                [new Sensor() { Search = ["$root"] }]
+                            ],
+                            Value = "[$0]",
+                            Type = RuleType.All
+                        }
+                    );
+                }
+                parentArray[i] = array.First();
+            }
+            else if (token is JObject obj)
+            {
+                JProperty firstProp = obj.Properties().First();
+
+                if (!locks.Any(e => e == parentArray))
+                {
+                    locks.Add(parentArray);
+                    negative.Add(
+                        new Rule()
+                        {
+                            Query = [new Sensor() { Search = negativeSearch }],
+                            ValueQueries =
+                            [
+                                [new Sensor() { Search = ["$root"] }]
+                            ],
+                            Value = $"{{\"{firstProp.Name}\": $0}}",
+                            Type = RuleType.All
+                        }
+                    );
+                }
+                parentArray[i] = firstProp.Value;
+            }
         }
     }
 

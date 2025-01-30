@@ -29,102 +29,20 @@ public class Program
         engine.AddRule(
             new Rule()
             {
+                Query = [new Sensor() { Search = ["$length"], Value = "1" }],
+                Value = "$removeStep",
+                Type = RuleType.Recursive
+            }
+        );
+        engine.AddRule(
+            new Rule()
+            {
                 Query =
                 [
                     new Sensor() { Search = ["$keysLength"], Value = "1" },
                     new Sensor() { Search = ["$root"], IsNegative = true }
                 ],
-                ValueQueries =
-                [
-                    [new Sensor() { Search = ["$root", "$*"] }]
-                ],
-                Value = "$0",
-                Type = RuleType.Recursive
-            }
-        );
-        engine.AddRule(
-            new Rule()
-            {
-                Query = [new Sensor() { Search = ["$length"], Value = "1" }],
-                ValueQueries =
-                [
-                    [new Sensor() { Search = ["$root", "[0]"] }]
-                ],
-                Value = "$0",
-                Type = RuleType.Recursive
-            }
-        );
-        engine.AddRule(
-            new Rule()
-            {
-                Query = [
-                    new Sensor() { Search = ["$*"], Value = "null" }
-                ],
-                Value = "$remove"
-            }
-        );
-        engine.AddRule(
-            new Rule()
-            {
-                Query =
-                [
-                    new Sensor() { Search = ["$length"], IsNegative = true },
-                    new Sensor() { Search = ["$keysLength"], IsNegative = true }
-                ],
-                ValueQueries =
-                [
-                    [new Sensor() { Search = ["$root"] }]
-                ],
-                Value =
-                    @"
-                    {
-                        ""id"": ""$uuid"",
-                        ""name"": ""$key"",
-                        ""isUnique"": false,
-                        ""value"": $0,
-                        ""default"": $0,
-                        ""values"": [$0],
-                        ""path"": ""/Root/$path$uuid"",
-                        ""type"": ""$type""
-                    }
-                ",
-                Type = RuleType.All
-            }
-        );
-        engine.AddRule(
-            new Rule()
-            {
-                Query = [new Sensor() { Search = ["$root"] }],
-                ValueQueries =
-                [
-                    [new Sensor() { Search = ["$root", "$*"] }]
-                ],
-                Value = "[$0]",
-                Type = RuleType.All
-            }
-        );
-        engine.AddRule(
-            new Rule()
-            {
-                Query =
-                [
-                    new Sensor() { Search = ["$keysLength"] },
-                    new Sensor()
-                    {
-                        Search = ["$hasKey"],
-                        Value = "isUnique",
-                        IsNegative = true
-                    }
-                ],
-                Value = "$toArray",
-                Type = RuleType.Recursive
-            }
-        );
-        engine.AddRule(
-            new Rule()
-            {
-                Query = [new Sensor() { Search = ["$root", "$*", "$length"] }],
-                Value = "$flatArray",
+                Value = "$removeStep",
                 Type = RuleType.Recursive
             }
         );
@@ -348,17 +266,17 @@ public class Program
         {
             JObject attribute = new JObject(property.DeepClone());
             ProcessResponse response = engine.Process(attribute);
-            Console.WriteLine(response.Result.ToString());
-            Console.WriteLine("______");
+            // Console.WriteLine(response.Result.ToString());
+            // Console.WriteLine("______");
 
-            // JsonRuleEngine negativeEngine = new JsonRuleEngine();
+            JsonRuleEngine negativeEngine = new JsonRuleEngine();
 
-            // foreach (Rule negativeRule in response.NegativeRules)
-            // {
-            //     negativeEngine.AddRule(negativeRule);
-            // }
+            foreach (Rule negativeRule in response.NegativeRules)
+            {
+                negativeEngine.AddRule(negativeRule);
+            }
 
-            // Console.WriteLine(negativeEngine.Process(response.Result).Result.ToString());
+            Console.WriteLine(negativeEngine.Process(response.Result).Result.ToString());
         }
     }
 }
