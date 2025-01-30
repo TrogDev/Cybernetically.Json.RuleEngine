@@ -6,9 +6,8 @@ public class Rule
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public RuleType Type { get; set; } = RuleType.Once;
-    public required List<string> Query { get; set; }
-    public string? QueryValue { get; set; }
-    public List<List<string>> ValueQueries { get; set; } = [];
+    public required List<Sensor> Query { get; set; }
+    public List<List<Sensor>> ValueQueries { get; set; } = [];
     public required string Value { get; set; }
     public string? AddKey { get; set; } = null;
     

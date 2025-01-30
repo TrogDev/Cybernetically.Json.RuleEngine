@@ -1,6 +1,9 @@
-using Newtonsoft.Json.Linq;
-using Cybernetically.Json.RuleEngine.Sctructures;
+using System.Text.Json;
 using Cybernetically.Json.RuleEngine.Enums;
+using Cybernetically.Json.RuleEngine.Interfaces;
+using Cybernetically.Json.RuleEngine.Sctructures;
+using Cybernetically.Json.RuleEngine.Services;
+using Newtonsoft.Json.Linq;
 
 namespace Cybernetically.Json.RuleEngine;
 
@@ -8,6 +11,7 @@ public class JsonRuleEngine
 {
     private const string enginePrefix = "$";
     private readonly List<Rule> rules = [];
+    public ITypeProvider TypeProvider { get; set; } = new DefaultTypeProvider();
 
     public void AddRule(Rule rule)
     {
@@ -19,22 +23,39 @@ public class JsonRuleEngine
         rules.RemoveAt(rules.FindIndex(e => e.Id == id));
     }
 
-    public List<Rule> Process(JObject json)
+    public ProcessResponse Process(JToken json)
     {
+        json = WrapToRoot(json);
+
         List<Rule> negative = [];
 
-        for (int i = 0; i < rules.Count;)
+        for (int i = 0; i < rules.Count; )
         {
             int changes = 0;
             Rule rule = rules[i];
 
-            foreach (JToken token in IterateJson(json))
+            if (rule.Type == RuleType.All)
             {
-                if (IsQueryValid(token, rule))
+                List<JToken> validTokens = IterateJson(json)
+                    .Where(t => IsQueryValid(t, rule.Query))
+                    .ToList();
+
+                foreach (JToken token in validTokens)
                 {
                     HandleRule(token, rule, negative);
                     changes++;
-                    break;
+                }
+            }
+            else
+            {
+                foreach (JToken token in IterateJson(json))
+                {
+                    if (IsQueryValid(token, rule.Query))
+                    {
+                        HandleRule(token, rule, negative);
+                        changes++;
+                        break;
+                    }
                 }
             }
 
@@ -45,15 +66,22 @@ public class JsonRuleEngine
         }
 
         negative.Reverse();
-        return negative;
+        return new ProcessResponse()
+        {
+            NegativeRules = negative,
+            Result = json[$"{enginePrefix}root"]!
+        };
     }
 
     private static IEnumerable<JToken> IterateJson(JToken json)
     {
-        yield return json;
-
         if (json is JObject jsonObject)
         {
+            if (!jsonObject.ContainsKey($"{enginePrefix}root"))
+            {
+                yield return json;
+            }
+
             foreach (JProperty property in jsonObject.Properties())
             {
                 foreach (JToken childToken in IterateJson(property.Value))
@@ -62,8 +90,10 @@ public class JsonRuleEngine
                 }
             }
         }
-        if (json is JArray jsonArray)
+        else if (json is JArray jsonArray)
         {
+            yield return json;
+
             foreach (JToken token in jsonArray.Children())
             {
                 foreach (JToken childToken in IterateJson(token))
@@ -72,21 +102,29 @@ public class JsonRuleEngine
                 }
             }
         }
+        else
+        {
+            yield return json;
+        }
     }
 
-    private bool IsQueryValid(JToken token, Rule rule)
+    private bool IsQueryValid(JToken token, List<Sensor> query)
     {
-        return IsQueryValueValid(token, rule) && IsQueryPathValid(token, rule.Query);
+        return query.All(s =>
+            (IsQueryValueValid(token, s) && IsQueryPathValid(token, s.Search))
+                ? !s.IsNegative
+                : s.IsNegative
+        );
     }
 
-    private bool IsQueryValueValid(JToken token, Rule rule)
+    private bool IsQueryValueValid(JToken token, Sensor sensor)
     {
-        if (rule.QueryValue == null)
+        if (sensor.Value == null)
         {
             return true;
         }
 
-        string variable = rule.Query.Last();
+        string variable = sensor.Search.Last();
 
         if (variable == $"{enginePrefix}keysLength")
         {
@@ -94,7 +132,7 @@ public class JsonRuleEngine
             {
                 return false;
             }
-            return jsonObject.Count.ToString() == rule.QueryValue;
+            return jsonObject.Count.ToString() == sensor.Value;
         }
         else if (variable == $"{enginePrefix}length")
         {
@@ -102,7 +140,15 @@ public class JsonRuleEngine
             {
                 return false;
             }
-            return arrayObject.Count.ToString() == rule.QueryValue;
+            return arrayObject.Count.ToString() == sensor.Value;
+        }
+        else if (variable == $"{enginePrefix}hasKey")
+        {
+            if (token is not JObject jsonObject)
+            {
+                return false;
+            }
+            return jsonObject.Properties().Any(e => e.Name == sensor.Value);
         }
         else
         {
@@ -110,7 +156,7 @@ public class JsonRuleEngine
             {
                 return false;
             }
-            return token.ToString() == rule.QueryValue;
+            return GetRawValue(token) == sensor.Value;
         }
     }
 
@@ -119,8 +165,28 @@ public class JsonRuleEngine
         int skip = 0;
         string last = query.Last();
 
-        if (last == $"{enginePrefix}keysLength" || last == $"{enginePrefix}length")
+        if (last == $"{enginePrefix}keysLength")
         {
+            if (token is not JObject)
+            {
+                return false;
+            }
+            skip++;
+        }
+        else if (last == $"{enginePrefix}length")
+        {
+            if (token is not JArray)
+            {
+                return false;
+            }
+            skip++;
+        }
+        else if (last == $"{enginePrefix}hasKey")
+        {
+            if (token is not JObject)
+            {
+                return false;
+            }
             skip++;
         }
 
@@ -130,11 +196,7 @@ public class JsonRuleEngine
         {
             string name = query[i];
 
-            if (currToken.Parent == null)
-            {
-                return name == $"{enginePrefix}root";
-            }
-            else if (currToken.Parent is JProperty propertyParent)
+            if (currToken.Parent is JProperty propertyParent)
             {
                 if (name != $"{enginePrefix}*" && propertyParent.Name != name)
                 {
@@ -144,7 +206,7 @@ public class JsonRuleEngine
             }
             else if (currToken.Parent is JArray arrayParent)
             {
-                if ($"[{arrayParent.IndexOf(currToken)}]" != name)
+                if (name != $"{enginePrefix}*" && $"[{arrayParent.IndexOf(currToken)}]" != name)
                 {
                     return false;
                 }
@@ -162,22 +224,123 @@ public class JsonRuleEngine
 
     private void HandleRule(JToken token, Rule rule, List<Rule> negative)
     {
-        string value = rule.Value;
-
-        if (value == $"{enginePrefix}remove")
+        if (rule.Value == $"{enginePrefix}remove")
         {
             HandleRemove(token, negative);
+        }
+        else if (rule.Value == $"{enginePrefix}toArray")
+        {
+            HandleToArray(token, negative);
+        }
+        else if (rule.Value == $"{enginePrefix}flatArray")
+        {
+            HandleFlatArray(token, negative);
+        }
+        else
+        {
+            HandleRewrite(token, rule, negative);
+        }
+    }
+
+    private void HandleRemove(JToken token, List<Rule> negative)
+    {
+        List<string> negativeSearch = GetCurrentSearch(token);
+
+        if (token.Parent is JProperty property)
+        {
+            negative.Add(
+                new Rule()
+                {
+                    Query =
+                    [
+                        new Sensor()
+                        {
+                            Search = negativeSearch.GetRange(0, negativeSearch.Count - 1)
+                        }
+                    ],
+                    Value = GetRawValue(property.Value),
+                    AddKey = negativeSearch.Last()
+                }
+            );
+            property.Remove();
+        }
+        else if (token.Parent is JArray array)
+        {
+            negative.Add(
+                new Rule()
+                {
+                    Query =
+                    [
+                        new Sensor()
+                        {
+                            Search = negativeSearch.GetRange(0, negativeSearch.Count - 1)
+                        }
+                    ],
+                    ValueQueries = [],
+                    Value = GetRawValue(token),
+                    AddKey = negativeSearch.Last().Replace("[", "").Replace("]", "")
+                }
+            );
+            array.Remove(token);
+        }
+    }
+
+    private void HandleToArray(JToken token, List<Rule> negative)
+    {
+        if (token is not JObject obj)
+        {
             return;
         }
 
+        JArray array = new JArray();
+
+        foreach (JProperty property in obj.Properties())
+        {
+            array.Add(property.Value);
+        }
+
+        if (token.Parent is JProperty parentProperty)
+        {
+            parentProperty.Value = array;
+        }
+        else if (token.Parent is JArray parentArray)
+        {
+            parentArray[parentArray.IndexOf(token)] = array;
+        }
+    }
+
+    private void HandleFlatArray(JToken token, List<Rule> negative)
+    {
+        if (token is not JArray array)
+        {
+            return;
+        }
+        if (token.Parent is not JArray parentArray)
+        {
+            return;
+        }
+
+        int i = parentArray.IndexOf(token);
+        token.Remove();
+
+        foreach (JToken item in array.Children().Reverse())
+        {
+            parentArray.Insert(i, item);
+        }
+    }
+
+    private void HandleRewrite(JToken token, Rule rule, List<Rule> negative)
+    {
+        string value = rule.Value;
+
         for (int i = 0; i < rule.ValueQueries.Count; i++)
         {
-            List<string> query = rule.ValueQueries[i];
-            JToken queryRoot = token.DeepClone();
+            List<Sensor> query = rule.ValueQueries[i];
+            JToken queryRoot = WrapToRoot(token);
 
             foreach (JToken queryToken in IterateJson(queryRoot))
             {
-                if (IsQueryPathValid(queryToken, query))
+                if (IsQueryValid(queryToken, query))
                 {
                     value = value.Replace($"{enginePrefix}{i}", GetRawValue(queryToken));
                     break;
@@ -185,84 +348,73 @@ public class JsonRuleEngine
             }
         }
 
-        List<string> negativeQuery = GetCurrentQuery(token);
+        value = value.Replace($"{enginePrefix}key", GetCurrentKey(token));
+        value = value.Replace($"{enginePrefix}uuid", Guid.NewGuid().ToString());
+        value = value.Replace($"{enginePrefix}type", TypeProvider.GetTypeName(token.Type));
+        string path = string.Join("/", GetCurrentSearch(token).Skip(1).SkipLast(1));
+        if (path.Length > 0)
+        {
+            path += "/";
+        }
+        value = value.Replace($"{enginePrefix}path", path);
+
+        List<string> negativeSearch = GetCurrentSearch(token);
 
         if (rule.AddKey == null)
         {
             if (token.Parent is JProperty property)
             {
-                negative.Add(new Rule()
-                {
-                    Query = negativeQuery,
-                    Value = GetRawValue(property.Value)
-                });
+                negative.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Search = negativeSearch }],
+                        Value = GetRawValue(property.Value)
+                    }
+                );
                 property.Value = JToken.Parse(value);
             }
-            if (token.Parent is JArray array)
+            else if (token.Parent is JArray array)
             {
-                negative.Add(new Rule()
-                {
-                    Query = negativeQuery,
-                    Value = GetRawValue(token)
-                });
+                negative.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Search = negativeSearch }],
+                        Value = GetRawValue(token)
+                    }
+                );
                 array[array.IndexOf(token)] = JToken.Parse(value);
             }
         }
         else
         {
-            if (token is JObject property)
+            if (token is JObject obj)
             {
-                negativeQuery.Add(rule.AddKey);
-                negative.Add(new Rule()
-                {
-                    Query = negativeQuery,
-                    Value = "$remove"
-                });
-                property.Add(new JProperty(rule.AddKey, JToken.Parse(value)));
+                negativeSearch.Add(rule.AddKey);
+                negative.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Search = negativeSearch }],
+                        Value = $"{enginePrefix}remove"
+                    }
+                );
+                obj.Add(new JProperty(rule.AddKey, JToken.Parse(value)));
             }
-            if (token is JArray array)
+            else if (token is JArray array)
             {
-                negativeQuery.Add(Math.Min(int.Parse(rule.AddKey), array.Count).ToString());
-                negative.Add(new Rule()
-                {
-                    Query = negativeQuery,
-                    Value = "$remove"
-                });
+                negativeSearch.Add(Math.Min(int.Parse(rule.AddKey), array.Count).ToString());
+                negative.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Search = negativeSearch }],
+                        Value = $"{enginePrefix}remove"
+                    }
+                );
                 array.Insert(Math.Min(int.Parse(rule.AddKey), array.Count), JToken.Parse(value));
             }
         }
     }
 
-    private void HandleRemove(JToken token, List<Rule> negative)
-    {
-        List<string> query = GetCurrentQuery(token);
-
-        if (token.Parent is JProperty property)
-        {
-            negative.Add(new Rule()
-            {
-                Query = query.GetRange(0, query.Count - 1),
-                ValueQueries = [],
-                Value = GetRawValue(property.Value),
-                AddKey = query.Last()
-            });
-            property.Remove();
-        }
-        if (token.Parent is JArray array)
-        {
-            string val = token.ToString();
-            negative.Add(new Rule()
-            {
-                Query = query.GetRange(0, query.Count - 1),
-                ValueQueries = [],
-                Value = GetRawValue(token),
-                AddKey = query.Last().Replace("[", "").Replace("]", "")
-            });
-            array.Remove(token);
-        }
-    }
-
-    private List<string> GetCurrentQuery(JToken token)
+    private List<string> GetCurrentSearch(JToken token)
     {
         List<string> query = [];
 
@@ -283,20 +435,55 @@ public class JsonRuleEngine
             currToken = currToken.Parent!;
         }
 
-        query.Insert(0, $"{enginePrefix}root");
-
         return query;
     }
 
     private string GetRawValue(JToken token)
     {
+        if (token.Type == JTokenType.Null)
+        {
+            return "null";
+        }
+
         string value = token.ToString();
 
-        if (token.Type == JTokenType.String)
+        if (token.Type == JTokenType.String || token.Type == JTokenType.Date)
         {
-            value = $"\"{value}\"";
+            value = JsonSerializer.Serialize(value);
+        }
+        else if (token.Type == JTokenType.Boolean)
+        {
+            value = value.ToLower();
         }
 
         return value;
+    }
+
+    private string GetCurrentKey(JToken token)
+    {
+        if (token.Parent is JProperty property)
+        {
+            return property.Name;
+        }
+        else if (token.Parent is JArray array)
+        {
+            return array.IndexOf(token).ToString();
+        }
+
+        return "";
+    }
+
+    private JToken WrapToRoot(JToken token)
+    {
+        if (token is JObject obj)
+        {
+            if (obj.ContainsKey($"{enginePrefix}root"))
+            {
+                return obj.DeepClone();
+            }
+        }
+
+        JProperty root = new JProperty($"{enginePrefix}root", token.DeepClone());
+        return new JObject(root);
     }
 }
