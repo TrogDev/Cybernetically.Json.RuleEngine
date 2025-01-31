@@ -25,9 +25,9 @@ public class JsonRuleEngine
     {
         json = WrapToRoot(json);
 
-        List<Rule> negative = [];
+        TrainedModel model = new TrainedModel();
 
-        for (int i = 0; i < rules.Count;)
+        for (int i = 0; i < rules.Count; )
         {
             int changes = 0;
             Rule rule = rules[i];
@@ -40,7 +40,7 @@ public class JsonRuleEngine
 
                 foreach (JToken token in validTokens)
                 {
-                    HandleRule(token, rule, negative);
+                    HandleRule(token, rule, model);
                     changes++;
                 }
             }
@@ -50,7 +50,7 @@ public class JsonRuleEngine
                 {
                     if (IsQueryValid(token, rule.Query))
                     {
-                        HandleRule(token, rule, negative);
+                        HandleRule(token, rule, model);
                         changes++;
                         break;
                     }
@@ -64,12 +64,8 @@ public class JsonRuleEngine
             }
         }
 
-        negative.Reverse();
-        return new ProcessResponse()
-        {
-            NegativeRules = negative,
-            Result = json[$"{enginePrefix}root"]!
-        };
+        model.NegativeRules.Reverse();
+        return new ProcessResponse() { Model = model, Result = json[$"{enginePrefix}root"]! };
     }
 
     private static IEnumerable<JToken> IterateJson(JToken json)
@@ -110,7 +106,7 @@ public class JsonRuleEngine
     private bool IsQueryValid(JToken token, List<Sensor> query)
     {
         return query.All(s =>
-            (IsQueryValueValid(token, s) && IsQueryPathValid(token, s.Search))
+            (IsQueryValueValid(token, s) && IsQueryPathValid(token, s.Path))
                 ? !s.IsNegative
                 : s.IsNegative
         );
@@ -123,7 +119,7 @@ public class JsonRuleEngine
             return true;
         }
 
-        string variable = sensor.Search.Last();
+        string variable = sensor.Path.Last();
 
         if (variable == $"{enginePrefix}keysLength")
         {
@@ -221,86 +217,103 @@ public class JsonRuleEngine
         return true;
     }
 
-    private void HandleRule(JToken token, Rule rule, List<Rule> negative)
+    private void HandleRule(JToken token, Rule rule, TrainedModel model)
     {
         if (rule.ValueType == RuleValueType.Command)
         {
             switch (rule.Value)
             {
                 case $"{enginePrefix}remove":
-                    HandleRemove(token, negative);
+                    HandleRemove(token, model);
                     break;
                 case $"{enginePrefix}removeStep":
-                    HandleRemoveStep(token, negative);
+                    HandleRemoveStep(token, model);
                     break;
             }
         }
         else
         {
-            HandleRewrite(token, rule, negative);
+            HandleRewrite(token, rule, model);
         }
     }
 
-    private void HandleRemove(JToken token, List<Rule> negative)
+    private void HandleRemove(JToken token, TrainedModel model)
     {
-        List<string> negativeSearch = GetCurrentSearch(token);
+        List<string> absolutePath = GetCurrentPath(token);
 
         if (token.Parent is JProperty property)
         {
-            negative.Add(
+            model.NegativeRules.Add(
                 new Rule()
                 {
                     Query =
                     [
-                        new Sensor()
-                        {
-                            Search = negativeSearch.GetRange(0, negativeSearch.Count - 1)
-                        }
+                        new Sensor() { Path = absolutePath.GetRange(0, absolutePath.Count - 1) }
                     ],
                     Value = GetRawValue(property.Value),
-                    AddKey = negativeSearch.Last()
+                    AddKey = absolutePath.Last()
+                }
+            );
+            model.PositiveRules.Add(
+                new Rule()
+                {
+                    Query = [new Sensor() { Path = absolutePath }],
+                    Value = $"{enginePrefix}remove",
+                    ValueType = RuleValueType.Command,
                 }
             );
             property.Remove();
         }
         else if (token.Parent is JArray array)
         {
-            negative.Add(
+            model.NegativeRules.Add(
                 new Rule()
                 {
                     Query =
                     [
-                        new Sensor()
-                        {
-                            Search = negativeSearch.GetRange(0, negativeSearch.Count - 1)
-                        }
+                        new Sensor() { Path = absolutePath.GetRange(0, absolutePath.Count - 1) }
                     ],
-                    ValueQueries = [],
                     Value = GetRawValue(token),
-                    AddKey = negativeSearch.Last().Replace("[", "").Replace("]", "")
+                    AddKey = absolutePath.Last().Replace("[", "").Replace("]", "")
+                }
+            );
+            model.PositiveRules.Add(
+                new Rule()
+                {
+                    Query = [new Sensor() { Path = absolutePath }],
+                    Value = $"{enginePrefix}remove",
+                    ValueType = RuleValueType.Command
                 }
             );
             array.Remove(token);
         }
     }
 
-    private void HandleRemoveStep(JToken token, List<Rule> negative)
+    private void HandleRemoveStep(JToken token, TrainedModel model)
     {
-        List<string> negativeSearch = GetCurrentSearch(token);
+        List<string> absolutePath = GetCurrentPath(token);
 
         if (token.Parent is JProperty parentProperty)
         {
             if (token is JArray array)
             {
-                negative.Add(
+                model.NegativeRules.Add(
                     new Rule()
                     {
-                        Query = [new Sensor() { Search = negativeSearch }],
+                        Query = [new Sensor() { Path = absolutePath }],
                         Value = "[$0]",
                         ValueQueries =
                         [
-                            [new Sensor() { Search = ["$root"] }]
+                            [new Sensor() { Path = ["$root"] }]
                         ]
+                    }
+                );
+                model.PositiveRules.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Path = absolutePath }],
+                        Value = $"{enginePrefix}removeStep",
+                        ValueType = RuleValueType.Command
                     }
                 );
                 parentProperty.Value = array.First();
@@ -308,15 +321,23 @@ public class JsonRuleEngine
             else if (token is JObject obj)
             {
                 JProperty firstProp = obj.Properties().First();
-                negative.Add(
+                model.NegativeRules.Add(
                     new Rule()
                     {
-                        Query = [new Sensor() { Search = negativeSearch }],
+                        Query = [new Sensor() { Path = absolutePath }],
                         Value = $"{{\"{firstProp.Name}\": $0}}",
                         ValueQueries =
                         [
-                            [new Sensor() { Search = ["$root"] }]
+                            [new Sensor() { Path = ["$root"] }]
                         ]
+                    }
+                );
+                model.PositiveRules.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Path = absolutePath }],
+                        Value = $"{enginePrefix}removeStep",
+                        ValueType = RuleValueType.Command
                     }
                 );
                 parentProperty.Value = firstProp.Value;
@@ -326,24 +347,41 @@ public class JsonRuleEngine
         {
             int i = parentArray.IndexOf(token);
 
-            negativeSearch = negativeSearch.GetRange(0, negativeSearch.Count - 1);
-            negativeSearch.Add($"{enginePrefix}*");
+            absolutePath = absolutePath.GetRange(0, absolutePath.Count - 1);
+            absolutePath.Add($"{enginePrefix}*");
 
             if (token is JArray array)
             {
                 if (!locks.Any(e => e == parentArray))
                 {
                     locks.Add(parentArray);
-                    negative.Add(
+                    model.NegativeRules.Add(
                         new Rule()
                         {
-                            Query = [new Sensor() { Search = negativeSearch }],
+                            Query = [new Sensor() { Path = absolutePath }],
                             ValueQueries =
                             [
-                                [new Sensor() { Search = ["$root"] }]
+                                [new Sensor() { Path = ["$root"] }]
                             ],
                             Value = "[$0]",
                             Type = RuleType.All
+                        }
+                    );
+                    model.PositiveRules.Add(
+                        new Rule()
+                        {
+                            Query =
+                            [
+                                new Sensor()
+                                {
+                                    Path = absolutePath
+                                        .SkipLast(1)
+                                        .Append($"{enginePrefix}*")
+                                        .ToList()
+                                }
+                            ],
+                            Value = $"{enginePrefix}removeStep",
+                            ValueType = RuleValueType.Command
                         }
                     );
                 }
@@ -356,16 +394,33 @@ public class JsonRuleEngine
                 if (!locks.Any(e => e == parentArray))
                 {
                     locks.Add(parentArray);
-                    negative.Add(
+                    model.NegativeRules.Add(
                         new Rule()
                         {
-                            Query = [new Sensor() { Search = negativeSearch }],
+                            Query = [new Sensor() { Path = absolutePath }],
                             ValueQueries =
                             [
-                                [new Sensor() { Search = ["$root"] }]
+                                [new Sensor() { Path = ["$root"] }]
                             ],
                             Value = $"{{\"{firstProp.Name}\": $0}}",
                             Type = RuleType.All
+                        }
+                    );
+                    model.PositiveRules.Add(
+                        new Rule()
+                        {
+                            Query =
+                            [
+                                new Sensor()
+                                {
+                                    Path = absolutePath
+                                        .SkipLast(1)
+                                        .Append($"{enginePrefix}*")
+                                        .ToList()
+                                }
+                            ],
+                            Value = $"{enginePrefix}removeStep",
+                            ValueType = RuleValueType.Command
                         }
                     );
                 }
@@ -373,7 +428,8 @@ public class JsonRuleEngine
             }
         }
     }
-    private void HandleRewrite(JToken token, Rule rule, List<Rule> negative)
+
+    private void HandleRewrite(JToken token, Rule rule, TrainedModel model)
     {
         string value = rule.Value;
 
@@ -392,7 +448,7 @@ public class JsonRuleEngine
             }
         }
 
-        List<string> negativeSearch = GetCurrentSearch(token);
+        List<string> absolutePath = GetCurrentPath(token);
 
         if (rule.AddKey == null)
         {
@@ -400,12 +456,20 @@ public class JsonRuleEngine
             {
                 if (rule.ValueType == RuleValueType.Key)
                 {
-                    negativeSearch[negativeSearch.Count - 1] = value;
-                    negative.Add(
+                    absolutePath[^1] = value;
+                    model.NegativeRules.Add(
                         new Rule()
                         {
-                            Query = [new Sensor() { Search = negativeSearch }],
+                            Query = [new Sensor() { Path = absolutePath }],
                             Value = property.Name,
+                            ValueType = rule.ValueType
+                        }
+                    );
+                    model.PositiveRules.Add(
+                        new Rule()
+                        {
+                            Query = [new Sensor() { Path = absolutePath }],
+                            Value = value,
                             ValueType = rule.ValueType
                         }
                     );
@@ -418,11 +482,19 @@ public class JsonRuleEngine
                 }
                 else
                 {
-                    negative.Add(
+                    model.NegativeRules.Add(
                         new Rule()
                         {
-                            Query = [new Sensor() { Search = negativeSearch }],
+                            Query = [new Sensor() { Path = absolutePath }],
                             Value = GetRawValue(property.Value),
+                            ValueType = rule.ValueType
+                        }
+                    );
+                    model.PositiveRules.Add(
+                        new Rule()
+                        {
+                            Query = [new Sensor() { Path = absolutePath }],
+                            Value = value,
                             ValueType = rule.ValueType
                         }
                     );
@@ -431,12 +503,15 @@ public class JsonRuleEngine
             }
             else if (token.Parent is JArray array)
             {
-                negative.Add(
+                model.NegativeRules.Add(
                     new Rule()
                     {
-                        Query = [new Sensor() { Search = negativeSearch }],
+                        Query = [new Sensor() { Path = absolutePath }],
                         Value = GetRawValue(token)
                     }
+                );
+                model.PositiveRules.Add(
+                    new Rule() { Query = [new Sensor() { Path = absolutePath }], Value = value }
                 );
                 array[array.IndexOf(token)] = JToken.Parse(value);
             }
@@ -445,24 +520,44 @@ public class JsonRuleEngine
         {
             if (token is JObject obj)
             {
-                negativeSearch.Add(rule.AddKey);
-                negative.Add(
+                model.NegativeRules.Add(
                     new Rule()
                     {
-                        Query = [new Sensor() { Search = negativeSearch }],
-                        Value = $"{enginePrefix}remove"
+                        Query = [new Sensor() { Path = absolutePath.Append(rule.AddKey).ToList() }],
+                        Value = $"{enginePrefix}remove",
+                        ValueType = RuleValueType.Command
+                    }
+                );
+                model.PositiveRules.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Path = absolutePath }],
+                        AddKey = rule.AddKey,
+                        Value = value
                     }
                 );
                 obj.Add(new JProperty(rule.AddKey, JToken.Parse(value)));
             }
             else if (token is JArray array)
             {
-                negativeSearch.Add(Math.Min(int.Parse(rule.AddKey), array.Count).ToString());
-                negative.Add(
+                int i = Math.Min(int.Parse(rule.AddKey), array.Count);
+                model.NegativeRules.Add(
                     new Rule()
                     {
-                        Query = [new Sensor() { Search = negativeSearch }],
-                        Value = $"{enginePrefix}remove"
+                        Query =
+                        [
+                            new Sensor() { Path = absolutePath.Append(i.ToString()).ToList() }
+                        ],
+                        Value = $"{enginePrefix}remove",
+                        ValueType = RuleValueType.Command
+                    }
+                );
+                model.PositiveRules.Add(
+                    new Rule()
+                    {
+                        Query = [new Sensor() { Path = absolutePath }],
+                        AddKey = rule.AddKey,
+                        Value = value
                     }
                 );
                 array.Insert(Math.Min(int.Parse(rule.AddKey), array.Count), JToken.Parse(value));
@@ -470,7 +565,7 @@ public class JsonRuleEngine
         }
     }
 
-    private List<string> GetCurrentSearch(JToken token)
+    private List<string> GetCurrentPath(JToken token)
     {
         List<string> query = [];
 

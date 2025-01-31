@@ -13,7 +13,7 @@ public class Program
         engine.AddRule(
             new Rule()
             {
-                Query = [new Sensor() { Search = ["language_tag"] }],
+                Query = [new Sensor() { Path = ["language_tag"] }],
                 Value = "$remove",
                 ValueType = RuleValueType.Command,
                 Type = RuleType.Recursive
@@ -22,7 +22,7 @@ public class Program
         engine.AddRule(
             new Rule()
             {
-                Query = [new Sensor() { Search = ["marketplace_id"] }],
+                Query = [new Sensor() { Path = ["marketplace_id"] }],
                 Value = "$remove",
                 ValueType = RuleValueType.Command,
                 Type = RuleType.Recursive
@@ -31,7 +31,7 @@ public class Program
         engine.AddRule(
             new Rule()
             {
-                Query = [new Sensor() { Search = ["$length"], Value = "1" }],
+                Query = [new Sensor() { Path = ["$length"], Value = "1" }],
                 Value = "$removeStep",
                 ValueType = RuleValueType.Command,
                 Type = RuleType.Recursive
@@ -42,8 +42,8 @@ public class Program
             {
                 Query =
                 [
-                    new Sensor() { Search = ["$keysLength"], Value = "1" },
-                    new Sensor() { Search = ["$root"], IsNegative = true }
+                    new Sensor() { Path = ["$keysLength"], Value = "1" },
+                    new Sensor() { Path = ["$root"], IsNegative = true }
                 ],
                 Value = "$removeStep",
                 ValueType = RuleValueType.Command,
@@ -53,16 +53,13 @@ public class Program
         engine.AddRule(
             new Rule()
             {
-                Query =
-                [
-                    new Sensor() { Search = ["$root", "bullet_point"] }
-                ],
+                Query = [new Sensor() { Path = ["$root", "bullet_point"] }],
                 Value = "Bullet points",
                 ValueType = RuleValueType.Key
             }
         );
 
-        JObject json = JObject.Parse(
+        JObject jsonForLearn = JObject.Parse(
             @"
                 {
                     'color': [
@@ -274,24 +271,58 @@ public class Program
                         }
                     ]
                 }
-        ".Replace("'", "\"")
+            ".Replace("'", "\"")
         );
 
-        foreach (JProperty property in json.Properties().Skip(6).Take(1))
+        JObject jsonForTest = JObject.Parse(
+            @"
+                {
+                    'color': [
+                        {
+                            'language_tag': 'en_US',
+                            'value': 'Multi Color',
+                            'marketplace_id': 'ATVPDKIKX0DER'
+                        }
+                    ],
+                    'bullet_point': [
+                        {
+                            'language_tag': 'en_US',
+                            'value': 'Long Burn Time: Enjoy hours of soothing candlelight to unwind after a busy day or enhance your self-care routine.',
+                            'marketplace_id': 'ATVPDKIKX0DER'
+                        }
+                    ],
+                    'model_number': [
+                        { 'value': 'LAVCND-14OZ-001', 'marketplace_id': 'ATVPDKIKX0DER' }
+                    ],
+                    'product_description': [
+                        {
+                            'language_tag': 'en_US',
+                            'value': 'Indulge in the calming essence of lavender with our Lavender Serenity Handmade Candle. Thoughtfully crafted to transform any space into a tranquil retreat, this candle combines natural ingredients with artisanal care for an unmatched sensory experience.',
+                            'marketplace_id': 'ATVPDKIKX0DER'
+                        }
+                    ]
+                }
+            ".Replace("'", "\"")
+        );
+
+        JObject attribute = new JObject(jsonForLearn);
+        ProcessResponse response = engine.Process(attribute);
+
+        JsonRuleEngine negativeEngine = new JsonRuleEngine();
+        foreach (Rule rule in response.Model.NegativeRules)
         {
-            JObject attribute = new JObject(property.DeepClone());
-            ProcessResponse response = engine.Process(attribute);
-            Console.WriteLine(response.Result.ToString());
-            Console.WriteLine("______");
-
-            JsonRuleEngine negativeEngine = new JsonRuleEngine();
-
-            foreach (Rule negativeRule in response.NegativeRules)
-            {
-                negativeEngine.AddRule(negativeRule);
-            }
-
-            Console.WriteLine(negativeEngine.Process(response.Result).Result.ToString());
+            negativeEngine.AddRule(rule);
         }
+
+        JsonRuleEngine positiveEngine = new JsonRuleEngine();
+        foreach (Rule rule in response.Model.PositiveRules)
+        {
+            positiveEngine.AddRule(rule);
+        }
+
+        var positiveResponse = positiveEngine.Process(jsonForTest);
+        Console.WriteLine(positiveResponse.Result.ToString());
+        Console.WriteLine("______");
+        Console.WriteLine(negativeEngine.Process(positiveResponse.Result).Result.ToString());
     }
 }

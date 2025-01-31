@@ -4,6 +4,6 @@ namespace Cybernetically.Json.RuleEngine.Sctructures;
 
 public record ProcessResponse
 {
-    public required List<Rule> NegativeRules { get; init; }
+    public required TrainedModel Model { get; init; }
     public required JToken Result { get; init; }
 }
